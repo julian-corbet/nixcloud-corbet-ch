@@ -176,6 +176,24 @@
           #    ConditionPathExists -- the generic, consumer-agnostic
           #    replacement for the private module's hardcoded unseal-unit
           #    Requires= (see modules/core.nix header "CUT from it").
+          # ExecStop must tolerate an already-unmounted path WITHOUT shell syntax. systemd
+          # tokenizes an Exec line and never runs a shell, so a trailing `|| true` arrives as
+          # two extra argv entries; fusermount then rejects the whole call with "extra
+          # arguments after the mountpoint" and never attempts the unmount -- on every stop,
+          # including the healthy one. The leading "-" is the only mechanism that grants
+          # tolerance here, so assert the shape rather than trusting a comment.
+          execstop-tolerates-without-shell-syntax =
+            let
+              stop = units.nixcloud-mount-personal.serviceConfig.ExecStop;
+              hasShellOps = builtins.match ".*(\\|\\||&&|;).*" stop != null;
+              tolerated = builtins.substring 0 1 stop == "-";
+              ok = tolerated && !hasShellOps;
+            in
+            if ok then
+              pkgs.runCommand "nixcloud-check-execstop" { } "echo ok > $out"
+            else
+              throw "nixcloud: ExecStop must start with '-' and contain no shell operators (systemd does not run a shell), got: ${stop}";
+
           units-condition-on-config-path =
             let
               personal = units.nixcloud-mount-personal.unitConfig.ConditionPathExists;

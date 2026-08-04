@@ -191,7 +191,13 @@ let
         # ExecStop tolerates "already gone" -- the health monitor
         # (nixcloud.health) may already have force-unmounted this before
         # systemd ever gets here, and that must not read as a stop failure.
-        ExecStop = "${pkgs.fuse}/bin/fusermount -uz ${escapeShellArg mp} || true";
+        #
+        # The leading "-" is what grants that tolerance, and it is the ONLY thing that can:
+        # systemd tokenizes an Exec line itself and never runs a shell, so a trailing `|| true`
+        # is not an operator -- it arrives as two more argv entries and fusermount rejects the
+        # call outright with "extra arguments after the mountpoint", meaning the unmount is not
+        # merely un-tolerated but never attempted, on every stop including the healthy one.
+        ExecStop = "-${pkgs.fuse}/bin/fusermount -uz ${escapeShellArg mp}";
         # Recovery's whole cure is `systemctl restart`; it must not itself
         # be the slow part. Bounded well under the health monitor's own
         # cooldown so a stop that hangs on a wedged process still resolves
