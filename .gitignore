@@ -1,0 +1,5 @@
+result
+result-*
+
+# Claude Code workflow artifacts (worktrees, local agent state)
+.claude/
