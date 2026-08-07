@@ -129,6 +129,14 @@ nixcloud-health: 'archive' (/mnt/clouds/icloud/archive, unit nixcloud-mount-arch
 nixcloud-health: restarted nixcloud-mount-archive.service
 ```
 
+`nixcloud.enable = true` also puts `rclone` itself on the operator's PATH
+(`environment.systemPackages`), so `rclone lsd remote:` or `rclone config`
+work at a shell without a separate package declaration. That's for a
+human only -- every generated mount unit already invokes this exact same
+`pkgs.rclone` by store path, so the FUSE mounts themselves never depended
+on it and would keep working even with `nixcloud.enable = false` removing
+it again.
+
 ## How the health monitor works
 
 `nixcloud-health` ([pkgs/nixcloud-health.nix](pkgs/nixcloud-health.nix))
@@ -276,7 +284,7 @@ session use case this repo is trying to also serve.
 
 | Option | Type | Default | |
 |---|---|---|---|
-| `nixcloud.enable` | bool | `false` | |
+| `nixcloud.enable` | bool | `false` | also puts `rclone` on the operator's PATH |
 | `nixcloud.mountRoot` | path | `/mnt/clouds` | parent of every `<provider>/<name>` mount |
 | `nixcloud.configPath` | path | `/run/rclone/rclone.conf` | runtime path to an already-decrypted rclone.conf |
 | `nixcloud.user` | str | `"root"` | uid/gid mounted files present as, resolved at runtime |

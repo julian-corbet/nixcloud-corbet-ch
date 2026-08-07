@@ -470,6 +470,14 @@ in
         systemd.tmpfiles.rules = [ "d ${cfg.cacheDir} 0755 root root -" ];
 
         systemd.services = listToAttrs (mapAttrsToList mkAccountUnit cfg.accounts);
+
+        # The operator's own `rclone` on PATH -- for a human running `rclone lsd remote:`,
+        # `rclone config`, or diagnosing a mount by hand, never for the mounts themselves: every
+        # generated unit above already invokes this exact `pkgs.rclone` by store path, so the FUSE
+        # mounts never depended on this line and would keep working without it. Gated on
+        # `cfg.enable`, the same condition as everything else in this block, so a consumer who
+        # imports this module without turning it on does not silently gain a package.
+        environment.systemPackages = [ pkgs.rclone ];
       }
 
       (mkIf cfg.health.enable {

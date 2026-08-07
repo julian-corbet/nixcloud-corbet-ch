@@ -307,6 +307,35 @@
               pkgs.runCommand "nixcloud-check-empty-remote-rejected" { } "echo ok > $out"
             else
               throw "nixcloud.accounts.<name>.remote = \"\": expected the eval-time assertion to reject this, but the build evaluated successfully";
+
+          # 9. The operator's own `rclone` reaches environment.systemPackages, and it is the exact
+          #    same derivation the generated mount units invoke by store path -- one source of
+          #    truth, not a second independently-resolved reference. Also proves the package is
+          #    gated on `nixcloud.enable`, not unconditional: a host that imports the module but
+          #    never enables it must not gain the package.
+          rclone-package-is-declared-and-shared-with-mount-units =
+            let
+              inEnv = lib.any (p: p == pkgs.rclone) host.config.environment.systemPackages;
+              # hasInfix runs on builtins.match under the hood, which refuses a pattern argument
+              # that carries string context -- context is discarded here on the SEARCH string only
+              # (never on the script being searched), same idiom as "modules-evaluate" above.
+              usedByUnit = lib.strings.hasInfix
+                (builtins.unsafeDiscardStringContext "${pkgs.rclone}/bin/rclone mount")
+                units.nixcloud-mount-personal.script;
+              disabledHost = lib.nixosSystem {
+                inherit system;
+                modules = [
+                  self.nixosModules.default
+                  bareStubs
+                ];
+              };
+              absentWhenDisabled = !(lib.any (p: p == pkgs.rclone) disabledHost.config.environment.systemPackages);
+              ok = inEnv && usedByUnit && absentWhenDisabled;
+            in
+            if ok then
+              pkgs.runCommand "nixcloud-check-rclone-package" { } "echo ok > $out"
+            else
+              throw "nixcloud: expected pkgs.rclone in environment.systemPackages (same derivation the mount units use) when enabled, and absent when nixcloud.enable = false, got inEnv=${toString inEnv} usedByUnit=${toString usedByUnit} absentWhenDisabled=${toString absentWhenDisabled}";
         }
       );
     };
