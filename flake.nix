@@ -18,8 +18,21 @@
       # inherently a bare-metal-host concept (the operator end state,
       # README's own framing: ONE rclone client on a server, re-exported to
       # a fleet), not something a desktop session needs its own copy of.
+      # (The desktop-client concern below is the one exception -- see its own comment.)
       nixosModules.core = ./modules/core.nix;
       nixosModules.default = self.nixosModules.core;
+
+      # The desktop-client concern (modules/desktop.nix): independent of `nixcloud.enable`, and
+      # the one part of this repo that IS portable to a non-NixOS desktop host -- see that file's
+      # own header for why the "NixOS-only, deliberately" boundary below does not apply to it.
+      nixosModules.desktop = ./modules/desktop-nixos.nix;
+
+      # Arch / system-manager backend for the desktop-client concern only -- publishes
+      # `nixcloud.desktop.archPackages` for the host's own pacman reconciler to consume. Installs
+      # nothing itself; see modules/desktop-arch.nix for why. There is no system-manager backend
+      # for `nixosModules.core`'s mount mechanism, and there will not be one -- README "Scope".
+      systemManagerModules.desktop = ./modules/desktop-arch.nix;
+      systemManagerModules.default = self.systemManagerModules.desktop;
 
       packages = forAllSystems (
         system:
@@ -336,6 +349,59 @@
               pkgs.runCommand "nixcloud-check-rclone-package" { } "echo ok > $out"
             else
               throw "nixcloud: expected pkgs.rclone in environment.systemPackages (same derivation the mount units use) when enabled, and absent when nixcloud.enable = false, got inEnv=${toString inEnv} usedByUnit=${toString usedByUnit} absentWhenDisabled=${toString absentWhenDisabled}";
+
+          # 10. The desktop-client concern (modules/desktop.nix / modules/desktop-nixos.nix) is
+          #     gated on `nixcloud.desktop.enable` ALONE -- proven in both directions against
+          #     `nixcloud.enable`, since independence from the mount-serving gate is the entire
+          #     point of giving it its own option rather than reusing `nixcloud.enable`. Also
+          #     proves `nixcloud.desktop.archPackages`, the Arch/system-manager side's only
+          #     contract, resolves the same way.
+          desktop-client-is-independent-of-mount-enable =
+            let
+              mkHost = desktopEnable: mountEnable:
+                lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.core
+                    self.nixosModules.desktop
+                    {
+                      nixcloud.enable = mountEnable;
+                      nixcloud.desktop.enable = desktopEnable;
+                    }
+                    bareStubs
+                  ];
+                };
+
+              hasPkg = h: lib.any (p: p == pkgs.nextcloud-client) h.config.environment.systemPackages;
+
+              # desktop on, mount role off -- the case this whole design exists for (a laptop
+              # that wants the GUI and has never declared a single rclone account).
+              desktopOnly = mkHost true false;
+              # desktop off, mount role on -- the mirror case: a mount-serving host must NOT
+              # gain the desktop GUI just because it enabled the unrelated mount mechanism.
+              mountOnly = mkHost false true;
+              # neither -- the default, importing both modules costs nothing unused.
+              neither = mkHost false false;
+              # both -- also a legitimate combination, both concerns simply turned on.
+              both = mkHost true true;
+
+              ok =
+                hasPkg desktopOnly
+                && !(hasPkg mountOnly)
+                && !(hasPkg neither)
+                && hasPkg both
+                && desktopOnly.config.nixcloud.desktop.archPackages == [ "nextcloud-client" ]
+                && mountOnly.config.nixcloud.desktop.archPackages == [ ];
+            in
+            if ok then
+              pkgs.runCommand "nixcloud-check-desktop-client-independent" { } "echo ok > $out"
+            else
+              throw ''
+                nixcloud.desktop.enable: expected pkgs.nextcloud-client in environment.systemPackages
+                iff desktop.enable is true, independent of nixcloud.enable, got
+                desktopOnly=${toString (hasPkg desktopOnly)} mountOnly=${toString (hasPkg mountOnly)}
+                neither=${toString (hasPkg neither)} both=${toString (hasPkg both)}
+              '';
         }
       );
     };

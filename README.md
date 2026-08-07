@@ -271,14 +271,43 @@ NixOS module can extend).
   does not check its permissions; get that right in whatever provisions
   it.
 
+## Desktop client
+
+`nixcloud.desktop.enable` declares the Nextcloud sync GUI
+(`nextcloud-client`) -- deliberately independent of `nixcloud.enable`,
+the mount-serving role above. A laptop that just wants the GUI does not
+need to declare itself a mount-serving host (and inherit the health
+monitor's timer) to get it, and a mount-serving host does not gain the
+GUI as a side effect of enabling its mounts:
+
+```nix
+# NixOS
+nixcloud.desktop.enable = true;   # -> environment.systemPackages
+```
+
+```nix
+# Arch / system-manager -- this module has no installer to call here
+# (see "Scope" below), so it only publishes a pacman name:
+nixcloud.desktop.enable = true;
+nixarch.packages.pacman = config.nixcloud.desktop.archPackages;
+```
+
 ## Scope
 
-NixOS-only (`nixosModules.core`/`nixosModules.default`) -- deliberately,
-unlike some sibling projects in this family that also ship a
-`systemManagerModules` variant for a non-NixOS desktop host. Running an
-rclone-mount-as-a-server role is inherently a bare-metal-host concept
-(see "the operator end state" above); there's no equivalent desktop-
-session use case this repo is trying to also serve.
+The mount-serving role (`nixosModules.core`/`nixosModules.default`) is
+NixOS-only -- deliberately, unlike some sibling projects in this family
+that also ship a `systemManagerModules` variant for a non-NixOS desktop
+host. Running an rclone-mount-as-a-server role is inherently a
+bare-metal-host concept (see "the operator end state" above); there's no
+equivalent desktop-session use case that role is trying to also serve.
+
+The desktop client above is the exception: it *is* a desktop-session use
+case, so it ships both backends -- `nixosModules.desktop`
+(`environment.systemPackages`) and `systemManagerModules.desktop`/
+`systemManagerModules.default` (publishes `nixcloud.desktop.archPackages`
+for the host's own pacman reconciler, the same NixOS/Arch split
+github:julian-corbet/nixdev uses for its whole catalogue). It shares
+nothing with the mount mechanism beyond the `nixcloud` option namespace.
 
 ## Option reference
 
@@ -303,10 +332,12 @@ session use case this repo is trying to also serve.
 | `nixcloud.health.stateDir` | path | `/run/nixcloud/state` | cross-tick counters (tmpfs) |
 | `nixcloud.health.statusDir` | path | `/run/nixcloud/status` | the data contract -- see "Health data" |
 | `nixcloud.health.package` | package | *(built-in)* | override to pin/patch |
+| `nixcloud.desktop.enable` | bool | `false` | independent of `nixcloud.enable`, see "Desktop client" |
+| `nixcloud.desktop.archPackages` | list of str | *(computed)* | `[ "nextcloud-client" ]` when enabled, for the Arch/system-manager side |
 
-Every option carries its full reasoning in `modules/core.nix`'s own
-doc comments -- this table is a lookup, not a substitute for reading
-them.
+Every option carries its full reasoning in `modules/core.nix`'s (mounts)
+or `modules/desktop.nix`'s (desktop client) own doc comments -- this
+table is a lookup, not a substitute for reading them.
 
 ## Checks
 
@@ -321,7 +352,10 @@ rendered `health.json` is wired to the declared accounts, not some
 independent copy that could drift; `provider` is a genuinely required
 option (proven in both directions: omitting it fails the build,
 supplying it succeeds); an empty `remote` is rejected at eval time
-rather than failing opaquely inside rclone at runtime.
+rather than failing opaquely inside rclone at runtime; and the desktop
+client (`nixcloud.desktop.enable`) lands in `environment.systemPackages`
+independently of `nixcloud.enable`, proven in both directions -- on with
+the mount role off, and off with the mount role on.
 
 ## License
 
