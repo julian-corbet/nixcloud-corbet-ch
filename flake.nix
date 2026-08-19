@@ -9,8 +9,26 @@
     { self, nixpkgs }:
     let
       lib = nixpkgs.lib;
+      # `packages` below is a plain writeShellApplication -- a real, buildable thing on either
+      # platform, and an aarch64 consumer builds it on its own aarch64 machine. That claim stands.
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: lib.genAttrs systems f;
+
+      # ONLY THE SYSTEM THESE CHECKS CAN GENUINELY BE BUILT ON, which is the narrower claim and the
+      # honest one. `nix flake check` BUILDS the checks (it merely evaluates everything else), and
+      # an aarch64-linux derivation cannot be built by an x86_64 runner, so declaring aarch64 here
+      # bought no coverage whatsoever: a bare `nix flake check` answered with "The check omitted
+      # these incompatible systems: aarch64-linux" and exited 0, and CI reported green having
+      # evaluated half of what this flake claimed.
+      #
+      # Keeping aarch64 and dropping `--all-systems` is the worse trade and the one this family
+      # refuses. Narrow the claim, keep the check strict -- see .github/workflows/ci.yml.
+      #
+      # This narrows the CHECKS ONLY, which is the whole of what was vacuous. The modules take
+      # `pkgs` from the consuming evaluation and never reach into `self.packages`, so nothing a
+      # consumer imports on aarch64 changes.
+      checkSystems = [ "x86_64-linux" ];
+      forCheckSystems = f: lib.genAttrs checkSystems f;
     in
     {
       # NixOS-only, deliberately -- unlike some family siblings this is not
@@ -47,7 +65,7 @@
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
 
-      checks = forAllSystems (
+      checks = forCheckSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
