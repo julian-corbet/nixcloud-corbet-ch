@@ -10,8 +10,16 @@ that's still `active`, still readable-looking, and permanently wedged.
 **The operator end state this is built for:** one rclone client on a
 server, many cloud accounts, each mounted under its own subdirectory of
 one root, the whole tree then re-exported once (SMB, NFS, a bind mount --
-nixcloud has no opinion) to the rest of a fleet. nixcloud only ever
-builds the mounts themselves.
+nixcloud has no opinion) to the rest of a fleet.
+
+**And the other half of the same subject:** the document clouds that
+serve those files back out -- a sync-and-share platform, and the
+remote-control daemon an operator drives the transfers from -- declared
+for a Kubernetes cluster rather than for a host. That is
+`nixidyModules.nixcloud` and the catalogue behind it; see [Cluster
+plane](#cluster-plane). The two halves share a name and a subject and
+nothing else: a host mount is a `systemd` unit, a document cloud is a
+pod, and neither module can see the other.
 
 **The problem this solves.** A mount unit reporting `active` proves the
 `rclone mount` process is alive. It proves nothing about whether the
@@ -292,6 +300,67 @@ nixcloud.desktop.enable = true;
 nixarch.packages.pacman = config.nixcloud.desktop.archPackages;
 ```
 
+## Cluster plane
+
+Same subject, other end of it. `nixidyModules.nixcloud` declares the
+document clouds that serve those files to everybody else, for a
+Kubernetes cluster:
+
+```nix
+# a nixidy environment (consumer side)
+{
+  imports = [ nixk3s.nixidyModules.apps nixcloud.nixidyModules.default ];
+
+  nixcloud.applications.documents = {
+    app = "opencloud";                 # from lib/applications.nix
+    version = "0.0.0";
+    namespace = "clouds";
+    createNamespace = true;
+    exposure = "public";
+    state.state.hostPath = "/srv/state/documents";
+    state.userfiles.hostPath = "/srv/documents";
+    env = {
+      OC_URL = "https://cloud.example.com";
+      OC_DOMAIN = "cloud.example.com";
+      OC_OIDC_ISSUER = "https://id.example.com";
+      WEB_OIDC_METADATA_URL = "https://id.example.com/.well-known/openid-configuration";
+      WEB_OIDC_CLIENT_ID = "00000000-0000-0000-0000-000000000000";
+    };
+  };
+}
+```
+
+**It renders no Kubernetes object of its own.** It defines into the app
+grammar in github:julian-corbet/nixk3s-corbet-ch -- which owns the
+Application, the Namespace, the Deployment and the Service -- and adds
+the one thing that grammar cannot know: what these particular
+applications *are*. Import the grammar alongside it or the module has
+nothing to define into.
+
+`lib/applications.nix` is the catalogue and holds only what is true of
+the software wherever anyone runs it: the port it listens on, the
+directories it writes *inside* the container, which variables carry an
+address it must be told, how patient a probe has to be, what it stops
+doing when nobody is looking. Three applications are catalogued --
+`opencloud`, `nextcloud`, `rclone` -- and the enum comes from that file,
+so an application it does not hold is not a refused value, it is not a
+value.
+
+Everything a *deployment* knows arrives from the declaration and cannot
+be defaulted here: the namespace, what backs each directory, the address
+of a database this repository does not run, the name a browser reaches
+it at, which build of each image runs. The split is enforced rather than
+asked for -- leaving a directory unbacked, leaving a required address
+unset, or giving a version to a container that shares the application's
+image are all eval errors, each with its own message and each with a
+check that watches it fire.
+
+There is deliberately **no default namespace**. Two collaboration
+platforms people keep open all day share a blast radius; a transfer
+daemon restarted and idled without anyone noticing does not, and a
+default would be this repository guessing which of its applications fail
+together.
+
 ## Scope
 
 The mount-serving role (`nixosModules.core`/`nixosModules.default`) is
@@ -339,6 +408,27 @@ Every option carries its full reasoning in `modules/core.nix`'s (mounts)
 or `modules/desktop.nix`'s (desktop client) own doc comments -- this
 table is a lookup, not a substitute for reading them.
 
+The cluster plane has its own namespace under the same prefix, and is
+documented the same way in `modules/cluster.nix`:
+
+| Option | Type | Default | |
+|---|---|---|---|
+| `nixcloud.clusterPlatform.project` | str | `"cloud"` | delivery project the Applications belong to |
+| `nixcloud.clusterPlatform.origin` | null or str | `null` | identity the apps are addressed under, when the render composes a band model |
+| `nixcloud.applications.<name>.app` | enum | *(required)* | `opencloud` \| `nextcloud` \| `rclone` |
+| `nixcloud.applications.<name>.version` | str | *(required)* | image tag; a whole reference overrides it |
+| `nixcloud.applications.<name>.namespace` | str | *(required)* | no default, deliberately -- see "Cluster plane" |
+| `nixcloud.applications.<name>.createNamespace` | bool | `false` | exactly one workload may anchor a namespace |
+| `nixcloud.applications.<name>.exposure` | enum | `"internal"` | `internal` \| `nb` \| `public` |
+| `nixcloud.applications.<name>.scaling` | enum | `"always"` | `always` \| `scale-to-zero`; against the catalogue's answer it warns |
+| `nixcloud.applications.<name>.wake` | null or enum | `null` | `keda` \| `sablier` |
+| `nixcloud.applications.<name>.state.<dir>` | submodule | `{ }` | `claim` or `hostPath`, one of the two, for every directory the catalogue says it writes |
+| `nixcloud.applications.<name>.env` | attrs of str | `{ }` | where a deployment's addresses and names arrive |
+| `nixcloud.applications.<name>.envFromSecrets` | list of str | `[ ]` | Secrets by NAME; nothing here can carry one's contents |
+| `nixcloud.applications.<name>.image` | null or str | `null` | whole reference; where a digest pin goes |
+| `nixcloud.applications.<name>.companionImages` | attrs of str | `{ }` | for containers that run an image of their own |
+| `nixcloud.applications.<name>.slot` | null or uint | `null` | a position, never an address |
+
 ## Checks
 
 `nix flake check` builds a toy two-account example host
@@ -356,6 +446,23 @@ rather than failing opaquely inside rclone at runtime; and the desktop
 client (`nixcloud.desktop.enable`) lands in `environment.systemPackages`
 independently of `nixcloud.enable`, proven in both directions -- on with
 the mount role off, and off with the mount role on.
+
+Two further checks cover the cluster plane, and both build a real nixidy
+environment from `examples/all/values.nix` through the real app grammar
+rather than a stand-in -- a module that merely *mentions* `nixk3s.apps`
+would type-check, which is not the claim being made:
+
+- `cluster-eval` -- the module's own resolution and every guard it makes,
+  in both directions. A control case that must render, so that a typo in
+  the shared base cannot make the refusals pass for the wrong reason;
+  then one otherwise-valid surface per guard with exactly one thing
+  wrong, each asserted by the *content* of the message it must produce.
+- `cluster-render` -- the manifests that actually come out, read back off
+  the rendered YAML with `yq`: which containers exist, which ports reach
+  the Service and which must never, that a single-writer Deployment does
+  not roll, that a claim and a node path each render as themselves, that
+  two namespaces are created and the workload joining one creates
+  nothing, and that no Secret object exists anywhere in the tree.
 
 ## License
 

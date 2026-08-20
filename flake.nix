@@ -1,12 +1,37 @@
 {
-  description = "nixcloud - declarative rclone FUSE cloud mounts, with a health monitor that catches a wedged private-API session before it hangs a consumer";
+  description = "nixcloud - the document cloud: declarative rclone FUSE cloud mounts on a host, with a health monitor that catches a wedged private-API session before it hangs a consumer, plus the sync-and-share platforms that serve those documents from a cluster";
 
+  # NOTHING A CONSUMER IMPORTS REACHES ANY OF THESE. The modules take `pkgs`/`config`/`lib` from
+  # whichever evaluation composes them, so a real host or a real cluster render never puts a second
+  # nixpkgs -- or a sibling flake's whole input closure -- into its own closure. The two below
+  # `nixpkgs` are used by `checks` ALONE.
+  #
+  # They arrived with the cluster surface, and the alternative was worse: `nix flake check`
+  # evaluates no module output on its own, so a repository whose cluster module was verified by
+  # nobody would have passed on flake syntax.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # The renderer the cluster module defines into. A real input rather than a name in a comment:
+    # without it there is no module system to evaluate the cluster side against.
+    nixidy = {
+      url = "github:arnarg/nixidy";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    # THE APP GRAMMAR THIS REPOSITORY CONSUMES, and the point being proven rather than a shortcut:
+    # a consumer imports the grammar itself, and this input exists so the checks can render the
+    # cluster module through the REAL grammar and assert what comes out -- rather than asserting
+    # that a module which merely mentions `nixk3s.apps` evaluates.
+    nixk3s = {
+      url = "github:julian-corbet/nixk3s-corbet-ch";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nixidy.follows = "nixidy";
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, nixidy, nixk3s }:
     let
       lib = nixpkgs.lib;
       # `packages` below is a plain writeShellApplication -- a real, buildable thing on either
@@ -51,6 +76,15 @@
       # for `nixosModules.core`'s mount mechanism, and there will not be one -- README "Scope".
       systemManagerModules.desktop = ./modules/desktop-arch.nix;
       systemManagerModules.default = self.systemManagerModules.desktop;
+
+      # The cluster plane: the document clouds that serve those files to everybody else, rather
+      # than the host-side mounts that pull them down for one machine. Only one module in the
+      # class, so `.default` is honest rather than invented.
+      nixidyModules.nixcloud = ./modules/cluster.nix;
+      nixidyModules.default = ./modules/cluster.nix;
+
+      # The catalogue, exposed so a consumer can inspect or validate it without re-reading the file.
+      lib.applications = (import ./lib/applications.nix { }).applications;
 
       packages = forAllSystems (
         system:
@@ -420,6 +454,32 @@
                 desktopOnly=${toString (hasPkg desktopOnly)} mountOnly=${toString (hasPkg mountOnly)}
                 neither=${toString (hasPkg neither)} both=${toString (hasPkg both)}
               '';
+
+          # 11. THE CLUSTER PLANE, and it is checked through the real renderer and the real app
+          #     grammar rather than against a stand-in. `modules/cluster.nix` renders no Kubernetes
+          #     object of its own -- it defines into a vocabulary a sibling repository owns -- so a
+          #     check that merely evaluated it would prove that a module mentioning `nixk3s.apps`
+          #     type-checks, which is not the claim. These two build a whole nixidy environment
+          #     from `examples/all/values.nix`.
+          #
+          #     The module's own resolution and every guard it makes, in BOTH directions: an empty
+          #     surface renders nothing, a declared one resolves, and each refusal gets a
+          #     declaration that must be refused.
+          cluster-eval = import ./checks/cluster-eval.nix {
+            inherit pkgs lib nixidy;
+            appsModule = nixk3s.nixidyModules.apps;
+            clusterModule = self.nixidyModules.nixcloud;
+            values = ./examples/all/values.nix;
+          };
+
+          # 12. The manifests that actually come out, read back off the rendered bytes rather than
+          #     off the options that produced them.
+          cluster-render = import ./checks/cluster-render.nix {
+            inherit pkgs lib nixidy;
+            appsModule = nixk3s.nixidyModules.apps;
+            clusterModule = self.nixidyModules.nixcloud;
+            values = ./examples/all/values.nix;
+          };
         }
       );
     };
