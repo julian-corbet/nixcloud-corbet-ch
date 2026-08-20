@@ -31,7 +31,20 @@
 #     and which carry the name it is reached at; only a declaration holds those values, and leaving
 #     one out is refused rather than deferred to a startup failure nothing in the tree points at;
 #   - the catalogue says a companion runs an image of its OWN; only a declaration can say which
-#     build of it, because a second image has its own version and its own pin.
+#     build of it, because a second image has its own version and its own pin;
+#   - the catalogue says WHICH VARIABLES a credential arrives in; only a declaration can say which
+#     Secret holds it, and neither side can say what it IS -- there is no option anywhere in this
+#     repository that carries a secret's contents.
+#
+# ── WHAT A DECLARATION OWNS THAT THE CATALOGUE COULD ONLY HAVE GUESSED ─────────────────────────
+#
+# `resources` and `companionResources` are the clearest case in the whole surface. A CPU share and
+# a memory ceiling are a MEASUREMENT -- of one workload's load, on one cluster's hardware, at one
+# point in its life -- and there is no reading of "true of the software wherever anyone runs it"
+# under which somebody else's numbers qualify. They are per CONTAINER rather than per pod because
+# that is how the scheduler sums them, which is also why a companion gets its own: a web front
+# that requests nothing is placed as though it were free, and a pod is oversubscribed by the
+# container nobody sized.
 #
 # ── ONE DIFFERENCE FROM THE SIBLING REPOSITORIES WORTH STATING ─────────────────────────────────
 #
@@ -125,10 +138,43 @@ let
       })
       w.state;
 
-  # Whole Secrets, loaded wholesale. Nothing here can carry a secret's CONTENT, which is what makes
-  # a declaration written against this module safe to publish.
+  # TWO WAYS TO NAME A SECRET, AND THEY ARE NOT THE SAME CLAIM.
+  #
+  #   envFromSecrets -- a whole Secret, loaded wholesale. The app gets whatever it happens to
+  #                     contain, which is convenient and blunt: a key added later lands in the
+  #                     process environment unannounced and nothing knew to expect it.
+  #   credentialSecrets -- the catalogue named a VARIABLE, and this says which Secret's key holds
+  #                     it. That renders a `secretKeyRef`, so the variable the application actually
+  #                     reads is written down and checkable, and the value still never exists here.
+  #
+  # Merged by SECRET NAME, because both forms may legitimately name one Secret: a bag of
+  # environment plus one key the catalogue happens to know about is one object in the cluster, and
+  # emitting it twice would be two entries fighting over one attribute.
+  #
+  # Nothing on either path can carry a secret's CONTENT, which is what makes a declaration written
+  # against this module safe to publish.
   secretsOf = w:
-    lib.listToAttrs (map (s: lib.nameValuePair s { secret = s; envFrom = true; }) w.envFromSecrets);
+    let
+      wholesale = lib.listToAttrs
+        (map (s: lib.nameValuePair s { secret = s; envFrom = true; }) w.envFromSecrets);
+
+      keyedFor = secret:
+        lib.concatMapAttrs
+          (group: c:
+            lib.optionalAttrs (c.secret == secret)
+              (lib.listToAttrs (map
+                (v: lib.nameValuePair v (c.keys.${v} or v))
+                (catalogue.${w.app}.credentials.${group} or [ ]))))
+          w.credentialSecrets;
+
+      named = lib.listToAttrs (map
+        (c: lib.nameValuePair c.secret {
+          secret = c.secret;
+          env = keyedFor c.secret;
+        })
+        (lib.attrValues w.credentialSecrets));
+    in
+    lib.zipAttrsWith (_: lib.foldl' lib.recursiveUpdate { }) [ wholesale named ];
 
   companionsOf = entry: w:
     lib.mapAttrs
@@ -139,6 +185,10 @@ let
         mounts = mountsOf c.mounts;
         security = securityOf c.unprivileged;
         probes = probesOf c;
+        # A companion the declaration never sized asks for nothing, which is the grammar's own
+        # default and renders no `resources` block at all -- rather than a zero, which is a
+        # different and much worse claim.
+        resources = w.companionResources.${cname} or { requests = { }; limits = { }; };
       })
       entry.companions;
 
@@ -167,7 +217,7 @@ let
   mkApp = x:
     let inherit (x) entry w; in
     {
-      inherit (w) namespace createNamespace project exposure scaling;
+      inherit (w) namespace createNamespace project exposure scaling resources;
       image = imageOf entry w;
       inherit (entry) command;
       args = entry.args ++ w.args;
@@ -245,6 +295,91 @@ let
             + " ${if lib.length (lib.filter (v: !(w.env ? ${v})) entry.publicIdentity) == 1 then "is" else "are"} "
             + "unset. Everything `${w.app}` sees is a proxied request, so it cannot derive its own "
             + "address -- and told nothing it does not guess, it refuses every caller.";
+        }
+      ])
+    workloads;
+
+  # THE THIRD HALF OF THE SAME SPLIT, and the one that decides whether a published declaration is
+  # safe. The catalogue names the VARIABLES a credential arrives in; a declaration names the Secret
+  # whose keys hold them, and never the values. Every direction of getting that wrong is refused
+  # here rather than at startup, where an application without its password does not stop -- it
+  # comes up and fails the first request that needs the thing behind it.
+  credentialAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        groups = lib.attrNames entry.credentials;
+        given = lib.attrNames w.credentialSecrets;
+      in
+      [
+        {
+          assertion = lib.all (g: w.credentialSecrets ? ${g}) groups;
+          message =
+            "nixcloud: application `${name}` reads a credential from "
+            + lib.concatMapStringsSep ", "
+              (g: "`${g}` (" + lib.concatMapStringsSep ", " (v: "`${v}`") entry.credentials.${g} + ")")
+              (lib.filter (g: !(w.credentialSecrets ? ${g})) groups)
+            + " and no Secret was named for it. Name one in `credentialSecrets`; the VALUE cannot "
+            + "arrive here and nothing in this repository may hold it. `envFromSecrets` does not "
+            + "answer this: a wholesale Secret might contain the key or might not, and neither this "
+            + "module nor the cluster can tell which until the application fails.";
+        }
+        {
+          assertion = lib.all (g: lib.elem g groups) given;
+          message =
+            "nixcloud: application `${name}` names a Secret for "
+            + lib.concatMapStringsSep ", " (g: "`${g}`") (lib.filter (g: !(lib.elem g groups)) given)
+            + ", which is not a credential `${w.app}` reads. A name that is neither a typo nor a "
+            + "credential is a Secret mounted into a process that never looks at it.";
+        }
+      ]
+      ++ lib.mapAttrsToList
+        (group: c:
+          let
+            vars = entry.credentials.${group} or [ ];
+            stray = lib.filter (v: !(lib.elem v vars)) (lib.attrNames c.keys);
+          in
+          {
+            assertion = stray == [ ];
+            message =
+              "nixcloud: application `${name}` maps a key of Secret `${c.secret}` onto "
+              + lib.concatMapStringsSep ", " (v: "`${v}`") stray
+              + ", which `${w.app}` does not read as part of `${group}`. `keys` renames the key "
+              + "INSIDE a Secret for a variable the catalogue already named; it does not invent "
+              + "variables, because a variable nothing reads is a credential handed out for free.";
+          })
+        w.credentialSecrets
+      ++ [
+        {
+          assertion = lib.all (v: !(w.env ? ${v})) (lib.concatLists (lib.attrValues entry.credentials));
+          message =
+            "nixcloud: application `${name}` sets "
+            + lib.concatMapStringsSep ", " (v: "`${v}`")
+              (lib.filter (v: w.env ? ${v}) (lib.concatLists (lib.attrValues entry.credentials)))
+            + " in `env`, and the catalogue records "
+            + "${if lib.length (lib.filter (v: w.env ? ${v}) (lib.concatLists (lib.attrValues entry.credentials))) == 1 then "that variable as a credential" else "those variables as credentials"}"
+            + ". `env` is plain text in a file written to be published; a credential belongs in a "
+            + "Secret this declaration NAMES, through `credentialSecrets`.";
+        }
+      ])
+    workloads;
+
+  # Sizing a container the pod does not have is not a preference either: it is a number nobody
+  # applies, sitting in a declaration that reads as though somebody had thought about the load.
+  companionResourceAssertions = lib.concatMap
+    (x:
+      let
+        inherit (x) name w entry;
+        stray = lib.filter (c: !(entry.companions ? ${c})) (lib.attrNames w.companionResources);
+      in
+      [
+        {
+          assertion = stray == [ ];
+          message =
+            "nixcloud: application `${name}` sizes "
+            + lib.concatMapStringsSep ", " (c: "`${c}`") stray
+            + ", which is not a container of `${w.app}`. A request against a container that does "
+            + "not exist is a number the scheduler never sees.";
         }
       ])
     workloads;
@@ -497,6 +632,117 @@ let
       description = ''
         Secrets loaded wholesale, by name. Named rather than carried: nothing in this repository
         can hold a secret's contents, which is what makes a declaration written here publishable.
+
+        BLUNT ON PURPOSE, and not a substitute for `credentialSecrets`: the application gets
+        whatever the Secret happens to contain, so a key added to it later arrives in the process
+        environment unannounced and nothing was expecting it. Where the catalogue knows the
+        variable, name it.
+      '';
+    };
+
+    credentialSecrets = lib.mkOption {
+      default = { };
+      example = lib.literalExpression ''{ database.secret = "example-files-database"; }'';
+      description = ''
+        WHICH SECRET holds each credential the catalogue says this application reads, keyed by the
+        SAME group names. The catalogue names the VARIABLE -- which is written in the software's
+        own documentation and true of every installation of it -- and this names the object in the
+        cluster whose key carries the value. Neither side holds the value, and there is no option
+        anywhere in this repository that could.
+
+        Renders a `secretKeyRef` per variable, so the value never passes through Nix or the
+        rendered tree, and the variable the application actually reads is written down somewhere a
+        person can check it against the Secret.
+
+        Leaving a group out is refused rather than deferred to runtime: an application started
+        without its password does not fail at startup, it comes up and then fails the first request
+        that needs whatever the password was protecting.
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          secret = lib.mkOption {
+            type = lib.types.str;
+            description = ''
+              NAME of an existing Secret. Required and defaulted nowhere: the attribute key is the
+              catalogue's name for the credential, not a name any cluster gave an object, and
+              guessing that the two agree is how a declaration silently references a Secret that
+              was never created.
+            '';
+          };
+          keys = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            example = lib.literalExpression ''{ POSTGRES_PASSWORD = "password"; }'';
+            description = ''
+              Which KEY inside that Secret holds each variable, as
+              `<VARIABLE> = "<key>"`. Defaults to the variable's own name, which is what a Secret
+              minted for this application looks like; state it only for a Secret whose keys were
+              named by something else and which this deployment does not get to rename.
+
+              Naming a variable the catalogue does not list for this group is refused -- this
+              renames a key, it does not invent a variable.
+            '';
+          };
+        };
+      });
+    };
+
+    resources = lib.mkOption {
+      default = { requests = { }; limits = { }; };
+      example = lib.literalExpression ''{ requests = { cpu = "200m"; memory = "512Mi"; }; limits.memory = "2Gi"; }'';
+      description = ''
+        Compute for THIS DEPLOYMENT's copy of the application's own container. A measurement of one
+        workload's load on one cluster's hardware, which is why the catalogue does not hold it and
+        why nothing here defaults it to a guess: a container that asks for nothing is scheduled as
+        though it were free, and that is an honest statement of "nobody has measured this yet"
+        rather than a number somebody copied.
+
+        A memory limit is a kill threshold, which is usually what a leaky application wants; a CPU
+        limit is a throttle, which is usually not.
+      '';
+      type = lib.types.submodule {
+        options = {
+          requests = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "What the scheduler must find for this container.";
+          };
+          limits = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "Ceilings for this container.";
+          };
+        };
+      };
+    };
+
+    companionResources = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          requests = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "What the scheduler must find for this companion.";
+          };
+          limits = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            description = "Ceilings for this companion.";
+          };
+        };
+      });
+      default = { };
+      example = lib.literalExpression ''{ web = { requests = { cpu = "10m"; memory = "32Mi"; }; limits.memory = "128Mi"; }; }'';
+      description = ''
+        The same measurement for the containers that stand BESIDE the application, keyed by the
+        name the catalogue gives them. Separate from `resources` for the reason the scheduler
+        cares about: it sums a pod's containers, so the web front nobody sized is exactly how a
+        node ends up oversubscribed by a process everyone thought of as small.
+
+        Sizing a container this application does not have is refused. Init containers take no entry
+        here -- they run once and exit, and the one this repository catalogues runs the
+        application's own image against the application's own volume, so what it costs is what the
+        application already costs.
       '';
     };
 
@@ -572,6 +818,8 @@ in
           createNamespace = true;
           exposure = "public";
           slot = 2;
+          resources.requests = { cpu = "200m"; memory = "512Mi"; };
+          resources.limits.memory = "2Gi";
           state.state.hostPath = "/example/state/documents";
           state.userfiles.hostPath = "/example/documents";
           env = {
@@ -617,6 +865,8 @@ in
     nixidy.assertions =
       stateAssertions
       ++ requirementAssertions
+      ++ credentialAssertions
+      ++ companionResourceAssertions
       ++ companionImageAssertions
       ++ anchorAssertions
       ++ slotAssertions;

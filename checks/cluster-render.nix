@@ -110,6 +110,36 @@ pkgs.runCommand "nixcloud-cluster-render"
   check "and no Secret object is rendered anywhere in the tree" "0" \
     "$(find -L $manifests -name 'Secret-*.yaml' -type f | wc -l)"
 
+  # The variable the catalogue names reaches the container as a REFERENCE. A `value:` on any of
+  # these would be a password in a file this repository publishes, which is the one failure the
+  # whole credential split exists to make unreachable.
+  check "the basic-auth pair the catalogue names is a reference, not a value" "null" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name == "RCLONE_RC_PASS") | .value' $xfer/Deployment-example-transfers.yaml)"
+  check "and it points at the Secret the declaration named, by key" "example-transfers-auth RCLONE_RC_PASS" \
+    "$(y '.spec.template.spec.containers[0].env[] | select(.name == "RCLONE_RC_PASS") | .valueFrom.secretKeyRef | .name + " " + .key' $xfer/Deployment-example-transfers.yaml)"
+  check "one Secret named both wholesale and by key is one object, referenced both ways" "1" \
+    "$(y '[.spec.template.spec.containers[0].envFrom[] | select(.secretRef.name == "example-transfers-auth")] | length' $xfer/Deployment-example-transfers.yaml)"
+  check "a key spelled differently inside the Secret is honoured verbatim" "example-files-database password" \
+    "$(y '.spec.template.spec.containers[] | select(.name == "example-files") | .env[] | select(.name == "POSTGRES_PASSWORD") | .valueFrom.secretKeyRef | .name + " " + .key' $files/Deployment-example-files.yaml)"
+  check "the database password never appears as a plain value on any container" "0" \
+    "$(y '[.spec.template.spec.containers[] | .env // [] | .[] | select(.name == "POSTGRES_PASSWORD") | select(has("value"))] | length' $files/Deployment-example-files.yaml)"
+
+  echo "== what a deployment measured lands per CONTAINER, and nowhere else =="
+  check "the application the declaration sized carries its request" "512Mi" \
+    "$(y '.spec.template.spec.containers[0].resources.requests.memory' $docs/Deployment-example-documents.yaml)"
+  check "and its ceiling" "2Gi" \
+    "$(y '.spec.template.spec.containers[0].resources.limits.memory' $docs/Deployment-example-documents.yaml)"
+  check "the web front is sized apart from the application it fronts" "32Mi" \
+    "$(y '.spec.template.spec.containers[] | select(.name == "web") | .resources.requests.memory' $files/Deployment-example-files.yaml)"
+  check "which is NOT what the application asked for" "768Mi" \
+    "$(y '.spec.template.spec.containers[] | select(.name == "example-files") | .resources.requests.memory' $files/Deployment-example-files.yaml)"
+  # An absent `resources` and a zeroed one are different claims to the scheduler. The container
+  # nobody measured must carry no block at all.
+  check "and the container nobody measured carries no resources block, rather than a zero" "null" \
+    "$(y '.spec.template.spec.containers[] | select(.name == "realtime") | .resources' $files/Deployment-example-files.yaml)"
+  check "an init container takes none either" "null" \
+    "$(y '.spec.template.spec.initContainers[0].resources' $docs/Deployment-example-documents.yaml)"
+
   echo "== no address is invented here: every Service is a plain ClusterIP with nothing pinned =="
   for f in $docs/Service-example-documents.yaml $files/Service-example-files.yaml $xfer/Service-example-transfers.yaml; do
     check "$(basename $f) type" "ClusterIP" "$(y '.spec.type' $f)"

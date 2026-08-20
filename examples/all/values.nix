@@ -9,12 +9,14 @@
 # than merely in what evaluates:
 #
 #   - a single-container platform with two directories and a first-boot init container, anchoring
-#     a shared namespace, always on, and running a tagged image;
+#     a shared namespace, always on, running a tagged image, and sized;
 #   - a three-container platform in that same namespace: one directory on a node and one on a
 #     claim, a companion running an image of its own and a companion running the application's,
-#     a port that must never reach the Service, and a digest pin on both real images;
+#     a port that must never reach the Service, a digest pin on both real images, a companion
+#     sized separately from the application, and a credential taken out of a differently-spelled
+#     key of a Secret of its own;
 #   - a single-container daemon in a namespace of its OWN, sleeping behind a wake front, taking
-#     its credentials from a named Secret.
+#     its credentials from ONE named Secret both wholesale and by key.
 {
   # Required by the nixidy environment itself, not by any module here.
   nixidy.target.repository = "https://example.com/example-org/example-gitops.git";
@@ -32,6 +34,13 @@
     createNamespace = true;
     exposure = "public";
     slot = 2;
+
+    # A MEASUREMENT, and the only kind of number in this file that came from watching something
+    # run. The catalogue holds none of these on purpose: a twenty-service binary's memory ceiling
+    # is a fact about one installation's user count, not about the software.
+    resources.requests = { cpu = "200m"; memory = "512Mi"; };
+    resources.limits.memory = "2Gi";
+
     state.state.hostPath = "/example/state/documents";
     state.userfiles.hostPath = "/example/documents";
     env = {
@@ -64,7 +73,25 @@
       POSTGRES_DB = "example-files";
       POSTGRES_USER = "example-files";
     };
+
+    # The password is the one thing in that list that may not be typed out, so it is not: the
+    # catalogue names the VARIABLE, this names the Secret, and `keys` says which key inside it --
+    # spelled differently here on purpose, because a Secret minted by something else does not
+    # take orders about its own key names.
+    credentialSecrets.database = {
+      secret = "example-files-database";
+      keys.POSTGRES_PASSWORD = "password";
+    };
     envFromSecrets = [ "example-files-env" ];
+
+    # The application and its web front are sized apart, which is the whole reason companions get
+    # their own term: the scheduler adds them up, so a front that asks for nothing is placed as
+    # though it cost nothing.
+    resources.requests = { cpu = "500m"; memory = "768Mi"; };
+    companionResources.web = {
+      requests = { cpu = "10m"; memory = "32Mi"; };
+      limits.memory = "128Mi";
+    };
   };
 
   # Its own namespace, which it anchors: a transfer daemon and a collaboration platform do not fail
@@ -80,6 +107,14 @@
     scaling = "scale-to-zero";
     wake = "keda";
     state.cfg.hostPath = "/example/state/transfers";
+
+    # ONE Secret, named twice on purpose and for two different claims: the pair the catalogue
+    # knows this daemon reads its basic auth from, by key, and whatever else that same object
+    # happens to carry, wholesale. They merge into one reference rather than fighting over it.
+    credentialSecrets.rc-auth.secret = "example-transfers-auth";
     envFromSecrets = [ "example-transfers-auth" ];
+
+    resources.requests = { cpu = "10m"; memory = "24Mi"; };
+    resources.limits.memory = "128Mi";
   };
 }

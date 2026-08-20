@@ -65,6 +65,11 @@ let
   goodCfg = (mkEnv base).config;
   apps = goodCfg.nixk3s.apps;
 
+  # Read straight off the file rather than through the module: the claim that a number nobody
+  # measured is absent from the CATALOGUE cannot be checked through a surface that merges the
+  # declaration's numbers into it.
+  catalogue = (import ../lib/applications.nix { }).applications;
+
   with' = f: lib.recursiveUpdate base f;
 
   # The declaration whose environment is complete, rebuilt one variable short. `recursiveUpdate`
@@ -150,6 +155,51 @@ let
       apps.example-transfers.secrets ? example-transfers-auth
       && apps.example-transfers.secrets.example-transfers-auth.envFrom;
 
+    # ── The credential split: the catalogue names the variable, the declaration names the Secret ──
+    "the variable a credential arrives in came from the catalogue, and the Secret from the declaration" =
+      apps.example-transfers.secrets.example-transfers-auth.env
+      == { RCLONE_RC_USER = "RCLONE_RC_USER"; RCLONE_RC_PASS = "RCLONE_RC_PASS"; };
+
+    "a key spelled differently inside the Secret is the declaration's to say, and only for a variable the catalogue named" =
+      apps.example-files.secrets.example-files-database.env == { POSTGRES_PASSWORD = "password"; };
+
+    "one Secret named both wholesale and by key is ONE reference, not two fighting over the attribute" =
+      apps.example-transfers.secrets.example-transfers-auth.envFrom
+      && apps.example-transfers.secrets.example-transfers-auth.env != { };
+
+    # The invariant that makes a published declaration safe: the module can only ever resolve a
+    # credential to the variable's OWN NAME or to a key the declaration typed. There is no third
+    # source, so nothing the catalogue holds can reach a `secretKeyRef` even by accident.
+    "every credential resolves to a key name from one of exactly two places, and never to a value" =
+      lib.all
+        (name:
+          let
+            declared = base.nixcloud.applications.${name}.credentialSecrets or { };
+            typed = lib.concatMap (c: lib.attrValues (c.keys or { })) (lib.attrValues declared);
+          in
+          lib.all
+            (s: lib.all
+              (variable: s.env.${variable} == variable || lib.elem s.env.${variable} typed)
+              (lib.attrNames s.env))
+            (lib.attrValues apps.${name}.secrets))
+        (lib.attrNames apps);
+
+    # ── The measurement the catalogue could only have guessed ─────────────────────────────────
+    "resources are the declaration's, per container, and land on the container it sized" =
+      apps.example-documents.resources.requests == { cpu = "200m"; memory = "512Mi"; }
+      && apps.example-documents.resources.limits == { memory = "2Gi"; }
+      && apps.example-files.companions.web.resources.limits == { memory = "128Mi"; };
+
+    "a container nobody sized asks for NOTHING rather than for zero" =
+      apps.example-files.companions.realtime.resources.requests == { }
+      && apps.example-files.companions.realtime.resources.limits == { };
+
+    "and the catalogue holds no number of either kind, for any application it describes" =
+      lib.all (e: !(e ? resources)) (lib.attrValues catalogue)
+      && lib.all
+        (e: lib.all (c: !(c ? resources)) (lib.attrValues e.companions))
+        (lib.attrValues catalogue);
+
     "the catalogue's environment and the deployment's are merged, not chosen between" =
       apps.example-documents.env.STORAGE_USERS_DRIVER == "posix"
       && apps.example-documents.env.OC_DOMAIN == "cloud.example.com";
@@ -213,6 +263,26 @@ let
       failsWith "anchored by none of them"
         (with' { nixcloud.applications.example-transfers.createNamespace = false; });
 
+    "a credential the catalogue names, with no Secret behind it, is refused" =
+      failsWith "and no Secret was named for it"
+        (with' { nixcloud.applications.example-transfers.credentialSecrets = lib.mkForce { }; });
+
+    "naming a Secret for a credential the application does not read is refused" =
+      failsWith "which is not a credential"
+        (with' { nixcloud.applications.example-transfers.credentialSecrets.nope.secret = "example-nope"; });
+
+    "renaming the key of a variable that credential does not carry is refused" =
+      failsWith "does not read as part of"
+        (with' { nixcloud.applications.example-transfers.credentialSecrets.rc-auth.keys.NOPE = "nope"; });
+
+    "typing a credential into `env` is refused, because this file is written to be published" =
+      failsWith "is plain text in a file written to be published"
+        (with' { nixcloud.applications.example-transfers.env.RCLONE_RC_USER = "example-user"; });
+
+    "sizing a container the application does not have is refused" =
+      failsWith "a number the scheduler never sees"
+        (with' { nixcloud.applications.example-files.companionResources.nope.requests.cpu = "1"; });
+
     "two workloads on one slot is refused" =
       failsWith "is claimed by 2 applications"
         (with' { nixcloud.applications.example-files.slot = 2; });
@@ -237,6 +307,13 @@ let
   };
 
   failed = lib.filter (n: !results.${n}) (lib.attrNames results);
+
+  # THE NAMES ARE DATA, NOT SHELL. A property name is written for a person to read, so it contains
+  # backticks around the option it is about -- and a backtick inside a double-quoted bash string is
+  # a command substitution that runs at BUILD time. Escaping is not tidiness here: unescaped, the
+  # name mentioning `env` printed the whole build environment into the failure report, and a name
+  # mentioning a command would have RUN it while the check was reporting a failure.
+  report = n: "echo '  - '" + lib.escapeShellArg n + " >&2";
 in
 pkgs.runCommand "nixcloud-cluster-eval" { } (
   if failed == [ ]
@@ -246,7 +323,7 @@ pkgs.runCommand "nixcloud-cluster-eval" { } (
   ''
   else ''
     echo "nixcloud cluster-eval FAILED (${toString (lib.length failed)}/${toString (lib.length (lib.attrNames results))}):" >&2
-    ${lib.concatMapStringsSep "\n" (n: ''echo "  - ${n}" >&2'') failed}
+    ${lib.concatMapStringsSep "\n" report failed}
     exit 1
   ''
 )

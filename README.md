@@ -319,6 +319,8 @@ Kubernetes cluster:
     exposure = "public";
     state.state.hostPath = "/srv/state/documents";
     state.userfiles.hostPath = "/srv/documents";
+    resources.requests = { cpu = "200m"; memory = "512Mi"; };
+    resources.limits.memory = "2Gi";
     env = {
       OC_URL = "https://cloud.example.com";
       OC_DOMAIN = "cloud.example.com";
@@ -340,20 +342,38 @@ nothing to define into.
 `lib/applications.nix` is the catalogue and holds only what is true of
 the software wherever anyone runs it: the port it listens on, the
 directories it writes *inside* the container, which variables carry an
-address it must be told, how patient a probe has to be, what it stops
-doing when nobody is looking. Three applications are catalogued --
-`opencloud`, `nextcloud`, `rclone` -- and the enum comes from that file,
-so an application it does not hold is not a refused value, it is not a
-value.
+address it must be told, which variables a password arrives in, how
+patient a probe has to be, what it stops doing when nobody is looking.
+Three applications are catalogued -- `opencloud`, `nextcloud`, `rclone`
+-- and the enum comes from that file, so an application it does not hold
+is not a refused value, it is not a value.
 
 Everything a *deployment* knows arrives from the declaration and cannot
 be defaulted here: the namespace, what backs each directory, the address
 of a database this repository does not run, the name a browser reaches
-it at, which build of each image runs. The split is enforced rather than
-asked for -- leaving a directory unbacked, leaving a required address
-unset, or giving a version to a container that shares the application's
-image are all eval errors, each with its own message and each with a
-check that watches it fire.
+it at, which build of each image runs, which Secret holds each
+credential, and what the workload actually costs. The split is enforced
+rather than asked for -- leaving a directory unbacked, leaving a required
+address unset, leaving a credential with no Secret behind it, typing a
+credential into `env`, sizing a container the application does not have,
+or giving a version to a container that shares the application's image
+are all eval errors, each with its own message and each with a check that
+watches it fire.
+
+**Naming a variable is not carrying a secret**, and `credentials` is
+where that distinction pays. The catalogue names the variable an
+application reads its password out of -- which its own documentation
+states and every installation shares; the declaration names the Secret
+and, where the keys were spelled by something else, which key. The value
+has no home on either side, and what comes out is a `secretKeyRef`.
+
+**Resources are the declaration's**, per container. A CPU share and a
+memory ceiling are a measurement of one workload's load on one cluster's
+hardware, so the catalogue holds none and nothing here defaults one: a
+container nobody sized asks for *nothing*, which renders no `resources`
+block at all rather than a zero. Companions are sized separately
+(`companionResources`) because the scheduler sums a pod's containers, and
+the front that asks for nothing is how a node gets oversubscribed.
 
 There is deliberately **no default namespace**. Two collaboration
 platforms people keep open all day share a blast radius; a transfer
@@ -424,7 +444,12 @@ documented the same way in `modules/cluster.nix`:
 | `nixcloud.applications.<name>.wake` | null or enum | `null` | `keda` \| `sablier` |
 | `nixcloud.applications.<name>.state.<dir>` | submodule | `{ }` | `claim` or `hostPath`, one of the two, for every directory the catalogue says it writes |
 | `nixcloud.applications.<name>.env` | attrs of str | `{ }` | where a deployment's addresses and names arrive |
-| `nixcloud.applications.<name>.envFromSecrets` | list of str | `[ ]` | Secrets by NAME; nothing here can carry one's contents |
+| `nixcloud.applications.<name>.envFromSecrets` | list of str | `[ ]` | Secrets by NAME, wholesale; nothing here can carry one's contents |
+| `nixcloud.applications.<name>.credentialSecrets.<group>.secret` | str | *(required)* | which Secret holds the credential the catalogue named |
+| `nixcloud.applications.<name>.credentialSecrets.<group>.keys` | attrs of str | `{ }` | `<VARIABLE> = "<key>"`; defaults to the variable's own name |
+| `nixcloud.applications.<name>.resources.requests` | attrs of str | `{ }` | what the scheduler must find for the app's own container |
+| `nixcloud.applications.<name>.resources.limits` | attrs of str | `{ }` | ceilings for the app's own container |
+| `nixcloud.applications.<name>.companionResources.<c>` | submodule | `{ }` | the same measurement for a container beside it |
 | `nixcloud.applications.<name>.image` | null or str | `null` | whole reference; where a digest pin goes |
 | `nixcloud.applications.<name>.companionImages` | attrs of str | `{ }` | for containers that run an image of their own |
 | `nixcloud.applications.<name>.slot` | null or uint | `null` | a position, never an address |
@@ -462,7 +487,10 @@ would type-check, which is not the claim being made:
   the Service and which must never, that a single-writer Deployment does
   not roll, that a claim and a node path each render as themselves, that
   two namespaces are created and the workload joining one creates
-  nothing, and that no Secret object exists anywhere in the tree.
+  nothing, that a credential arrives as a `secretKeyRef` and never as a
+  `value`, that a measurement lands on the container it was written for
+  while an unmeasured one carries no `resources` block at all, and that
+  no Secret object exists anywhere in the tree.
 
 ## License
 
