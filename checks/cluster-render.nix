@@ -32,6 +32,20 @@ pkgs.runCommand "nixcloud-cluster-render"
   files="$manifests/example-files"
   xfer="$manifests/example-transfers"
 
+  docs_app="$manifests/apps/Application-example-documents.yaml"
+  files_app="$manifests/apps/Application-example-files.yaml"
+
+  # Taking over objects a cluster already holds is a DIFFERENT Application, not a different
+  # Deployment: server-side apply and server-side diff, so the controller compares against what
+  # the API server holds. Both directions are asserted, because a term that is set on everything
+  # renders the same manifest as a term nobody can express.
+  echo "== the declaration that adopts asks for server-side apply and diff, and only it =="
+  check "adopting: SSA" "ServerSideApply=true" "$(y '.spec.syncPolicy.syncOptions[0]' $files_app)"
+  check "adopting: SSD" "ServerSideDiff=true" \
+    "$(y '.metadata.annotations."argocd.argoproj.io/compare-options"' $files_app)"
+  check "creating fresh: no SSA" "null" "$(y '.spec.syncPolicy.syncOptions' $docs_app)"
+  check "creating fresh: no SSD" "null" "$(y '.metadata.annotations' $docs_app)"
+
   echo "== the catalogue's ports reach the containers, and no declaration stated one =="
   check "documents port" "9200" "$(y '.spec.template.spec.containers[0].ports[0].containerPort' $docs/Deployment-example-documents.yaml)"
   check "transfers port" "5572" "$(y '.spec.template.spec.containers[0].ports[0].containerPort' $xfer/Deployment-example-transfers.yaml)"

@@ -442,6 +442,7 @@ documented the same way in `modules/cluster.nix`:
 | `nixcloud.applications.<name>.exposure` | enum | `"internal"` | `internal` \| `nb` \| `public` |
 | `nixcloud.applications.<name>.scaling` | enum | `"always"` | `always` \| `scale-to-zero`; against the catalogue's answer it warns |
 | `nixcloud.applications.<name>.wake` | null or enum | `null` | `keda` \| `sablier` |
+| `nixcloud.applications.<name>.adopt` | bool | `false` | takes over objects the cluster already holds: server-side apply and diff. A cluster's history, never the catalogue's |
 | `nixcloud.applications.<name>.state.<dir>` | submodule | `{ }` | `claim` or `hostPath`, one of the two, for every directory the catalogue says it writes |
 | `nixcloud.applications.<name>.env` | attrs of str | `{ }` | where a deployment's addresses and names arrive |
 | `nixcloud.applications.<name>.envFromSecrets` | list of str | `[ ]` | Secrets by NAME, wholesale; nothing here can carry one's contents |

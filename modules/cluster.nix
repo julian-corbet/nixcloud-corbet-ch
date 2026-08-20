@@ -217,7 +217,7 @@ let
   mkApp = x:
     let inherit (x) entry w; in
     {
-      inherit (w) namespace createNamespace project exposure scaling resources;
+      inherit (w) namespace createNamespace project exposure scaling resources adopt;
       image = imageOf entry w;
       inherit (entry) command;
       args = entry.args ++ w.args;
@@ -571,6 +571,33 @@ let
       description = ''
         Which front wakes it from zero. Meaningless unless `scaling = "scale-to-zero"`, and its
         absence there is warned about: nothing brings the workload back.
+      '';
+    };
+
+    adopt = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether this workload is TAKING OVER objects that already exist in the cluster -- applied
+        by hand, by an addon, or by the manifests this declaration replaces. It renders the
+        Application with server-side apply and server-side diff, so the delivery controller
+        compares against what the API server actually holds rather than against a client-side
+        reconstruction of it.
+
+        IT IS A DECLARATION'S TERM AND NOT THE CATALOGUE'S, deliberately, and the reason is the
+        same one that splits this repository in half: whether an object is already in a cluster is
+        THAT CLUSTER'S HISTORY, not a fact about the software. The same application adopted on one
+        cluster and created fresh on another differs here and nowhere else, so the catalogue can
+        have no opinion to hold.
+
+        AND IT EARNS ITS KEEP FOR EXACTLY THIS CATALOGUE. A rendered spec is never byte-identical
+        to the YAML it replaces -- labels differ, fields this grammar sets appear, fields it does
+        not set disappear -- and the controller acts on that difference. Every application here
+        keeps somebody's documents on a single-writer volume, so its Deployment rolls by
+        `Recreate`: the old pod stops before the new one starts, and the difference is downtime
+        rather than a rollout nobody notices. Adopting shrinks the diff to what genuinely changed,
+        which is what makes taking over a live installation possible at all. It does not make it
+        zero. Render it, diff it against what is running, and decide knowingly.
       '';
     };
 

@@ -13,8 +13,10 @@
 #   - a three-container platform in that same namespace: one directory on a node and one on a
 #     claim, a companion running an image of its own and a companion running the application's,
 #     a port that must never reach the Service, a digest pin on both real images, a companion
-#     sized separately from the application, and a credential taken out of a differently-spelled
-#     key of a Secret of its own;
+#     sized separately from the application, a credential taken out of a differently-spelled key
+#     of a Secret of its own, and an ADOPTION -- it is the one declaration here taking over
+#     objects a cluster already holds, so it is the one whose Application asks for server-side
+#     apply and diff;
 #   - a single-container daemon in a namespace of its OWN, sleeping behind a wake front, taking
 #     its credentials from ONE named Secret both wholesale and by key.
 {
@@ -65,6 +67,13 @@
     namespace = "example-clouds";
     exposure = "public";
     slot = 3;
+
+    # This installation was already running from hand-written manifests when the declaration was
+    # written, so the render has to take its objects over rather than create them. A deployment's
+    # fact and not the catalogue's: the same platform declared against an empty cluster would say
+    # nothing here.
+    adopt = true;
+
     state.html.hostPath = "/example/state/files";
     state.data.claim = "example-files-documents";
     env = {
