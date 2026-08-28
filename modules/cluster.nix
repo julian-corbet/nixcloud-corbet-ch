@@ -283,7 +283,10 @@ let
 
   factoryModule = mkConsumerModule {
     namespace = "nixcloud";
-    platformOption = "clusterPlatform";
+    # `clusterPlatform` is the established public node. Keep it wholly consumer-owned and give
+    # the factory an unpublishable internal name so its reserved-root check cannot collide with
+    # that flat legacy schema.
+    platformOption = "factoryPlatform";
     publishPlatformOptions = false;
     platformOf = { consumer, ... }: {
       inherit (consumer.clusterPlatform) project origin;
