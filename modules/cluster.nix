@@ -226,6 +226,63 @@ let
         }])
       workloads;
 
+  # The factory supplies the same safety boundaries. Keep these domain diagnostics too: the public
+  # check suite deliberately proves that the document-cloud wording is the refusal a declaration
+  # reaches, rather than merely that some lower layer happened to reject it first.
+  stateAssertions = workloads:
+    lib.concatMap
+      (x: [{
+        assertion = lib.all
+          (backing: (backing.claim == null) != (backing.hostPath == null))
+          (lib.attrValues x.w.state);
+        message =
+          "nixcloud: application `${x.name}` must back each directory with EITHER an existing claim OR a "
+          + "node path, never both and never neither. A directory with no backing is a pod's own filesystem, "
+          + "discarded on the next restart -- and for these applications the thing being discarded is somebody's documents.";
+      }])
+      workloads;
+
+  anchorAssertions = workloads:
+    let
+      anchors = lib.filter (x: x.w.createNamespace) workloads;
+      byNamespace = lib.groupBy (x: x.w.namespace) anchors;
+      namespaces = lib.unique (map (x: x.w.namespace) workloads);
+    in
+    lib.mapAttrsToList
+      (namespace: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "nixcloud: namespace `${namespace}` is anchored by ${toString (lib.length xs)} applications ("
+          + lib.concatMapStringsSep ", " (x: "`${x.name}`") xs
+          + "). Exactly one workload may create a namespace.";
+      })
+      byNamespace
+    ++ map
+      (namespace: {
+        assertion = byNamespace ? ${namespace};
+        message =
+          "nixcloud: namespace `${namespace}` is used by "
+          + lib.concatMapStringsSep ", " (x: "`${x.name}`")
+            (lib.filter (x: x.w.namespace == namespace) workloads)
+          + " and anchored by none of them. Something must own it: set `createNamespace` on exactly one of them.";
+      })
+      (lib.filter (namespace: !(byNamespace ? ${namespace})) namespaces);
+
+  slotAssertions = workloads:
+    let
+      claimed = lib.filter (x: x.w.slot != null) workloads;
+      bySlot = lib.groupBy (x: toString x.w.slot) claimed;
+    in
+    lib.mapAttrsToList
+      (slot: xs: {
+        assertion = lib.length xs == 1;
+        message =
+          "nixcloud: slot ${slot} is claimed by ${toString (lib.length xs)} applications ("
+          + lib.concatMapStringsSep ", " (x: "`${x.name}`") xs
+          + "). A slot is one identity in several address spaces at once; two workloads on one number is two workloads on one address.";
+      })
+      bySlot;
+
   sleepWarnings = workloads:
     lib.concatMap
       (x: lib.optional (x.w.scaling == "scale-to-zero" && !x.entry.sleepSafe) {
@@ -318,7 +375,10 @@ let
       origin = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
     };
     extraAssertions = workloads:
-      requirementAssertions workloads
+      stateAssertions workloads
+      ++ anchorAssertions workloads
+      ++ slotAssertions workloads
+      ++ requirementAssertions workloads
       ++ credentialAssertions workloads
       ++ companionResourceAssertions workloads;
     extraWarnings = sleepWarnings;
