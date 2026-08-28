@@ -54,6 +54,9 @@
       # consumer imports on aarch64 changes.
       checkSystems = [ "x86_64-linux" ];
       forCheckSystems = f: lib.genAttrs checkSystems f;
+      clusterModule = import ./modules/cluster.nix {
+        inherit (nixk3s.lib) mkConsumerModule;
+      };
     in
     {
       # NixOS-only, deliberately -- unlike some family siblings this is not
@@ -80,8 +83,8 @@
       # The cluster plane: the document clouds that serve those files to everybody else, rather
       # than the host-side mounts that pull them down for one machine. Only one module in the
       # class, so `.default` is honest rather than invented.
-      nixidyModules.nixcloud = ./modules/cluster.nix;
-      nixidyModules.default = ./modules/cluster.nix;
+      nixidyModules.nixcloud = clusterModule;
+      nixidyModules.default = clusterModule;
 
       # The catalogue, exposed so a consumer can inspect or validate it without re-reading the file.
       lib.applications = (import ./lib/applications.nix { }).applications;
